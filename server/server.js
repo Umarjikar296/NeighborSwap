@@ -22,6 +22,12 @@ if (!fs.existsSync('uploads')) {
     fs.mkdirSync('uploads');
 }
 
+// In server/server.js, update the CORS configuration
+app.use(cors({
+    origin: ['http://localhost:5173', 'http://localhost:3000'],
+    credentials: true
+}));
+
 // MongoDB connection
 const connectDB = async () => {
     try {
