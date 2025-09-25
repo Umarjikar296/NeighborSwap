@@ -7,44 +7,67 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const path = require('path');
 require('dotenv').config();
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
+// Middleware - CORS MUST come before other middleware
+const corsOptions = {
+    origin: ['http://localhost:5173', 'http://localhost:3000'], // your frontend URLs
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+    credentials: true
+};
+app.use(cors(corsOptions));  // MUST be before routes
+app.options('*', cors(corsOptions)); // handle preflight requests
+
+// Body parser middleware AFTER CORS
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use('/uploads', express.static('uploads'));
 
 // Create uploads directory if it doesn't exist
-const fs = require('fs');
 if (!fs.existsSync('uploads')) {
     fs.mkdirSync('uploads');
 }
 
-// In server/server.js, update the CORS configuration
-app.use(cors({
-    origin: ['http://localhost:5173', 'http://localhost:3000'],
-    credentials: true
-}));
+// Set default JWT_SECRET if not provided
+if (!process.env.JWT_SECRET) {
+    process.env.JWT_SECRET = 'your-super-secret-jwt-key-change-in-production';
+    console.log('⚠️ Using default JWT_SECRET. Please set JWT_SECRET in .env file for production!');
+}
 
-// MongoDB connection
+// MongoDB connection with better error handling
 const connectDB = async () => {
     try {
-        await mongoose.connect(process.env.MONGODB_URI);
-        console.log('✅ MongoDB Atlas connected successfully');
+        // If no MONGODB_URI provided, use local MongoDB
+        const mongoURI = process.env.MONGODB_URI || 'mongodb://localhost:27017/neighborswap';
+        console.log('🔄 Attempting to connect to MongoDB...');
+
+        await mongoose.connect(mongoURI);
+        console.log('✅ MongoDB connected successfully');
+        console.log(`📍 Database: ${mongoose.connection.name}`);
     } catch (error) {
-        console.error('❌ MongoDB connection error:', error);
-        process.exit(1);
+        console.error('❌ MongoDB connection error:', error.message);
+        console.log('💡 Make sure MongoDB is running or check your MONGODB_URI');
+        // Don't exit, continue with local fallback
+        try {
+            await mongoose.connect('mongodb://localhost:27017/neighborswap');
+            console.log('✅ Connected to local MongoDB fallback');
+        } catch (localError) {
+            console.error('❌ Local MongoDB also failed:', localError.message);
+            process.exit(1);
+        }
     }
 };
 
 // User Schema
 const userSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    email: { type: String, required: true, unique: true },
-    phone: { type: String, required: true },
-    password: { type: String, required: true },
+    name: { type: String, required: true, trim: true },
+    email: { type: String, required: true, unique: true, lowercase: true, trim: true },
+    phone: { type: String, required: true, trim: true },
+    password: { type: String, required: true, minlength: 6 },
     location: {
         address: String,
         lat: Number,
@@ -90,12 +113,8 @@ const Product = mongoose.model('Product', productSchema);
 
 // File upload configuration
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, 'uploads/');
-    },
-    filename: (req, file, cb) => {
-        cb(null, Date.now() + path.extname(file.originalname));
-    }
+    destination: (req, file, cb) => cb(null, 'uploads/'),
+    filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
 
 const upload = multer({
@@ -105,12 +124,8 @@ const upload = multer({
         const filetypes = /jpeg|jpg|png|gif/;
         const mimetype = filetypes.test(file.mimetype);
         const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
-
-        if (mimetype && extname) {
-            return cb(null, true);
-        } else {
-            cb(new Error('Only image files are allowed'));
-        }
+        if (mimetype && extname) cb(null, true);
+        else cb(new Error('Only image files are allowed'));
     }
 });
 
@@ -125,6 +140,7 @@ const authenticateToken = (req, res, next) => {
 
     jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
         if (err) {
+            console.error('Token verification error:', err.message);
             return res.status(403).json({ error: 'Invalid token' });
         }
         req.user = user;
@@ -133,21 +149,49 @@ const authenticateToken = (req, res, next) => {
 };
 
 // ROUTES
-
-// Health check
 app.get('/api/health', (req, res) => {
-    res.json({ status: 'OK', message: 'Server is running' });
+    res.json({
+        status: 'OK',
+        message: 'Server is running',
+        timestamp: new Date().toISOString(),
+        mongodb: mongoose.connection.readyState === 1 ? 'Connected' : 'Disconnected'
+    });
 });
 
-// User Registration
+// Register with better validation and error handling
 app.post('/api/auth/register', async (req, res) => {
     try {
+        console.log('📝 Registration attempt:', {
+            email: req.body.email,
+            name: req.body.name,
+            hasPassword: !!req.body.password
+        });
+
         const { name, email, phone, password } = req.body;
 
+        // Validate required fields
+        if (!name || !email || !phone || !password) {
+            return res.status(400).json({
+                error: 'All fields are required',
+                missing: {
+                    name: !name,
+                    email: !email,
+                    phone: !phone,
+                    password: !password
+                }
+            });
+        }
+
+        // Validate password length
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters long' });
+        }
+
         // Check if user exists
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (existingUser) {
-            return res.status(400).json({ error: 'User already exists' });
+            console.log('❌ User already exists:', email);
+            return res.status(400).json({ error: 'User with this email already exists' });
         }
 
         // Hash password
@@ -155,15 +199,16 @@ app.post('/api/auth/register', async (req, res) => {
 
         // Create user
         const user = new User({
-            name,
-            email,
-            phone,
+            name: name.trim(),
+            email: email.toLowerCase().trim(),
+            phone: phone.trim(),
             password: hashedPassword
         });
 
         await user.save();
+        console.log('✅ User created successfully:', user.email);
 
-        // Generate JWT
+        // Generate token
         const token = jwt.sign(
             { userId: user._id, email: user.email },
             process.env.JWT_SECRET,
@@ -177,33 +222,57 @@ app.post('/api/auth/register', async (req, res) => {
                 id: user._id,
                 name: user.name,
                 email: user.email,
+                phone: user.phone,
                 isVerified: user.isVerified
             }
         });
     } catch (error) {
-        console.error('Registration error:', error);
-        res.status(500).json({ error: 'Server error' });
+        console.error('❌ Registration error:', error);
+
+        // Handle duplicate key error
+        if (error.code === 11000) {
+            return res.status(400).json({ error: 'User with this email already exists' });
+        }
+
+        // Handle validation errors
+        if (error.name === 'ValidationError') {
+            const validationErrors = Object.values(error.errors).map(e => e.message);
+            return res.status(400).json({ error: validationErrors.join(', ') });
+        }
+
+        res.status(500).json({ error: 'Server error during registration' });
     }
 });
 
-// User Login
+// Login with better error handling
 app.post('/api/auth/login', async (req, res) => {
     try {
+        console.log('🔐 Login attempt:', { email: req.body.email });
+
         const { email, password } = req.body;
 
+        // Validate required fields
+        if (!email || !password) {
+            return res.status(400).json({ error: 'Email and password are required' });
+        }
+
         // Find user
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: email.toLowerCase() });
         if (!user) {
-            return res.status(400).json({ error: 'Invalid credentials' });
+            console.log('❌ User not found:', email);
+            return res.status(400).json({ error: 'Invalid email or password' });
         }
 
         // Check password
         const validPassword = await bcrypt.compare(password, user.password);
         if (!validPassword) {
-            return res.status(400).json({ error: 'Invalid credentials' });
+            console.log('❌ Invalid password for:', email);
+            return res.status(400).json({ error: 'Invalid email or password' });
         }
 
-        // Generate JWT
+        console.log('✅ Login successful for:', user.email);
+
+        // Generate token
         const token = jwt.sign(
             { userId: user._id, email: user.email },
             process.env.JWT_SECRET,
@@ -224,15 +293,18 @@ app.post('/api/auth/login', async (req, res) => {
             }
         });
     } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ error: 'Server error' });
+        console.error('❌ Login error:', error);
+        res.status(500).json({ error: 'Server error during login' });
     }
 });
 
-// Get current user
+// Current user
 app.get('/api/auth/me', authenticateToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.userId).select('-password');
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
         res.json(user);
     } catch (error) {
         console.error('Get user error:', error);
@@ -240,33 +312,25 @@ app.get('/api/auth/me', authenticateToken, async (req, res) => {
     }
 });
 
-// Get all products
+// Products
 app.get('/api/products', async (req, res) => {
     try {
         const { category, search, minPrice, maxPrice, condition } = req.query;
-
         let query = { isActive: true };
 
-        if (category && category !== 'All') {
-            query.category = category;
-        }
-
+        if (category && category !== 'All') query.category = category;
         if (search) {
             query.$or = [
                 { name: { $regex: search, $options: 'i' } },
                 { description: { $regex: search, $options: 'i' } }
             ];
         }
-
         if (minPrice || maxPrice) {
             query.price = {};
             if (minPrice) query.price.$gte = parseFloat(minPrice);
             if (maxPrice) query.price.$lte = parseFloat(maxPrice);
         }
-
-        if (condition) {
-            query.condition = condition;
-        }
+        if (condition) query.condition = condition;
 
         const products = await Product.find(query)
             .populate('owner', 'name email ratings isVerified')
@@ -280,11 +344,10 @@ app.get('/api/products', async (req, res) => {
     }
 });
 
-// Create new product
+// Create product
 app.post('/api/products', authenticateToken, upload.array('images', 5), async (req, res) => {
     try {
         const { name, description, price, category, condition, location } = req.body;
-
         const images = req.files ? req.files.map(file => `/uploads/${file.filename}`) : [];
 
         const product = new Product({
@@ -300,25 +363,18 @@ app.post('/api/products', authenticateToken, upload.array('images', 5), async (r
 
         await product.save();
         await product.populate('owner', 'name email ratings isVerified');
-
-        res.status(201).json({
-            message: 'Product created successfully',
-            product
-        });
+        res.status(201).json({ message: 'Product created successfully', product });
     } catch (error) {
         console.error('Create product error:', error);
         res.status(500).json({ error: 'Server error' });
     }
 });
 
-// Get user's products
+// User's products
 app.get('/api/users/:id/products', async (req, res) => {
     try {
-        const products = await Product.find({
-            owner: req.params.id,
-            isActive: true
-        }).populate('owner', 'name ratings isVerified');
-
+        const products = await Product.find({ owner: req.params.id, isActive: true })
+            .populate('owner', 'name ratings isVerified');
         res.json(products);
     } catch (error) {
         console.error('Get user products error:', error);
@@ -326,16 +382,14 @@ app.get('/api/users/:id/products', async (req, res) => {
     }
 });
 
-// Seed database with fake products
+// Seed products
 app.post('/api/seed', async (req, res) => {
     try {
-        // Check if products already exist
         const existingProducts = await Product.countDocuments();
         if (existingProducts > 0) {
-            return res.json({ message: 'Database already seeded' });
+            return res.json({ message: 'Database already seeded', count: existingProducts });
         }
 
-        // Create a default user for seeding
         let seedUser = await User.findOne({ email: 'seed@example.com' });
         if (!seedUser) {
             const hashedPassword = await bcrypt.hash('password123', 12);
@@ -347,13 +401,13 @@ app.post('/api/seed', async (req, res) => {
                 isVerified: true
             });
             await seedUser.save();
+            console.log('✅ Seed user created');
         }
 
-        // Fake products data
         const fakeProducts = [
             {
                 name: 'MacBook Air M2',
-                description: 'Brand new MacBook Air with M2 chip. 8GB RAM, 256GB SSD. Perfect for students and professionals.',
+                description: 'Brand new MacBook Air with M2 chip. Perfect for students and professionals.',
                 price: 999,
                 category: 'Electronics',
                 condition: 'New',
@@ -362,7 +416,7 @@ app.post('/api/seed', async (req, res) => {
             },
             {
                 name: 'Vintage Leather Sofa',
-                description: 'Beautiful brown leather sofa in excellent condition. 3-seater, very comfortable.',
+                description: 'Beautiful brown leather sofa in excellent condition. Very comfortable.',
                 price: 450,
                 category: 'Furniture',
                 condition: 'Good',
@@ -371,104 +425,92 @@ app.post('/api/seed', async (req, res) => {
             },
             {
                 name: 'iPhone 14 Pro',
-                description: 'Like new iPhone 14 Pro, 128GB, Space Black. Includes original box and accessories.',
+                description: 'Like new iPhone 14 Pro, barely used. Includes original box and charger.',
                 price: 800,
                 category: 'Electronics',
                 condition: 'Like New',
-                images: ['https://images.unsplash.com/photo-1592899677977-9c10ca588bbd?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Mountain Bike',
-                description: 'Trek mountain bike, 21-speed, excellent for trails and city riding. Recently serviced.',
-                price: 320,
-                category: 'Sports',
-                condition: 'Good',
-                images: ['https://images.unsplash.com/photo-1544191696-15693072e1c4?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Coffee Table',
-                description: 'Modern glass coffee table with wooden legs. Perfect centerpiece for living room.',
-                price: 150,
-                category: 'Furniture',
-                condition: 'Good',
-                images: ['https://images.unsplash.com/photo-1549497538-303791108f95?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Gaming Chair',
-                description: 'Ergonomic gaming chair with RGB lighting. Excellent lumbar support, barely used.',
-                price: 200,
-                category: 'Furniture',
-                condition: 'Like New',
-                images: ['https://images.unsplash.com/photo-1541558869434-2840d308329a?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Wireless Headphones',
-                description: 'Sony WH-1000XM4 noise cancelling headphones. Excellent sound quality.',
-                price: 250,
-                category: 'Electronics',
-                condition: 'Good',
-                images: ['https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Designer Dress',
-                description: 'Beautiful evening dress, size M. Worn only once, perfect for special occasions.',
-                price: 80,
-                category: 'Clothing',
-                condition: 'Like New',
-                images: ['https://images.unsplash.com/photo-1595777457583-95e059d581b8?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Kitchen Blender',
-                description: 'High-power Vitamix blender. Perfect for smoothies and food preparation.',
-                price: 45,
-                category: 'Home & Garden',
-                condition: 'Good',
-                images: ['https://images.unsplash.com/photo-1570197788417-0e82375c9371?w=500'],
-                owner: seedUser._id
-            },
-            {
-                name: 'Programming Books Set',
-                description: 'Collection of 5 programming books including Clean Code, Design Patterns, etc.',
-                price: 60,
-                category: 'Books',
-                condition: 'Good',
-                images: ['https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=500'],
+                images: ['https://images.unsplash.com/photo-1592286499084-d4c19a24c3bc?w=500'],
                 owner: seedUser._id
             }
         ];
 
         await Product.insertMany(fakeProducts);
+        console.log('✅ Sample products created');
 
         res.json({
-            message: '10 fake products seeded successfully',
-            count: fakeProducts.length
+            message: 'Database seeded successfully',
+            products: fakeProducts.length,
+            seedUser: seedUser.email
         });
     } catch (error) {
         console.error('Seed error:', error);
-        res.status(500).json({ error: 'Seeding failed' });
+        res.status(500).json({ error: 'Seeding failed', details: error.message });
     }
 });
 
 // Error handling middleware
 app.use((error, req, res, next) => {
     console.error('Unhandled error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    res.status(500).json({ error: 'Internal server error', details: error.message });
 });
+
+// Create default users on startup
+async function createDefaultUsers() {
+    try {
+        // Create test user
+        let testUser = await User.findOne({ email: 'test@example.com' });
+        if (!testUser) {
+            const hashedPassword = await bcrypt.hash('password123', 12);
+            testUser = await new User({
+                name: 'Test User',
+                email: 'test@example.com',
+                phone: '0000000000',
+                password: hashedPassword,
+                isVerified: true
+            }).save();
+            console.log('✅ Default test user created: test@example.com / password123');
+        }
+
+        // Create admin user
+        let adminUser = await User.findOne({ email: 'admin@neighborswap.com' });
+        if (!adminUser) {
+            const hashedPassword = await bcrypt.hash('admin123', 12);
+            adminUser = await new User({
+                name: 'Admin User',
+                email: 'admin@neighborswap.com',
+                phone: '1111111111',
+                password: hashedPassword,
+                isVerified: true
+            }).save();
+            console.log('✅ Default admin user created: admin@neighborswap.com / admin123');
+        }
+
+        console.log('\n🔑 DEFAULT LOGIN CREDENTIALS:');
+        console.log('👤 Test User: test@example.com / password123');
+        console.log('👤 Admin User: admin@neighborswap.com / admin123');
+        console.log('');
+
+    } catch (err) {
+        console.error('❌ Error creating default users:', err.message);
+    }
+}
 
 // Start server
 const startServer = async () => {
-    await connectDB();
+    try {
+        await connectDB();
+        await createDefaultUsers();
 
-    app.listen(PORT, () => {
-        console.log(`🚀 Server running on http://localhost:${PORT}`);
-        console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
-    });
+        app.listen(PORT, () => {
+            console.log(`🚀 Server running on http://localhost:${PORT}`);
+            console.log(`📱 Environment: ${process.env.NODE_ENV || 'development'}`);
+            console.log(`🔗 API Health Check: http://localhost:${PORT}/api/health`);
+            console.log(`🌐 CORS enabled for: http://localhost:5173, http://localhost:3000`);
+        });
+    } catch (error) {
+        console.error('❌ Failed to start server:', error);
+        process.exit(1);
+    }
 };
 
 startServer();
