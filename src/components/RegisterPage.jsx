@@ -33,11 +33,28 @@ const RegisterPage = ({ onRegister, setCurrentView }) => {
         }
 
         try {
+            console.log('1. Form data received:', formData);
+            
             const { confirmPassword, ...registerData } = formData;
+            console.log('2. Sending to API:', registerData);
+            
             const response = await authAPI.register(registerData);
+            console.log('3. Success response:', response.data);
+            
+            // Store token and user data
+            localStorage.setItem('token', response.data.token);
+            localStorage.setItem('user', JSON.stringify(response.data.user));
+            
             onRegister(response.data.user, response.data.token);
         } catch (error) {
-            setError(error.response?.data?.error || 'Registration failed');
+            console.error('4. Error details:', error.response?.data);
+            console.error('5. Error status:', error.response?.status);
+            
+            // Better error handling
+            const errorMessage = error.response?.data?.message || 
+                               error.response?.data?.error || 
+                               'Registration failed';
+            setError(errorMessage);
         } finally {
             setLoading(false);
         }

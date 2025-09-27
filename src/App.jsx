@@ -33,16 +33,18 @@ function App() {
   }, []);
 
   const fetchProducts = async () => {
-    try {
-      setLoading(true);
-      const response = await productAPI.getAll();
-      setProducts(response.data);
-    } catch (error) {
-      console.error('Error fetching products:', error);
-    } finally {
-      setLoading(false);
-    }
-  };
+  try {
+    setLoading(true);
+    const response = await productAPI.getAll();
+    // Extract the products array from the response
+    setProducts(response.data.products || []);
+  } catch (error) {
+    console.error('Error fetching products:', error);
+    setProducts([]); // Set empty array on error
+  } finally {
+    setLoading(false);
+  }
+};
 
   const handleLogin = (userData, token) => {
     localStorage.setItem('token', token);

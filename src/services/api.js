@@ -1,13 +1,11 @@
 // src/services/api.js
 import axios from 'axios';
 
-// FIX: Make sure this matches your backend port
 const API_BASE_URL = 'http://localhost:5001/api';
 
-// Create axios instance
 const api = axios.create({
   baseURL: API_BASE_URL,
-  withCredentials: true // REQUIRED if backend uses credentials: true
+  withCredentials: true
 });
 
 // Add token to requests
@@ -16,6 +14,15 @@ api.interceptors.request.use((config) => {
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
+
+// Response interceptor for better error handling
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    console.error('API Error:', error.response?.data || error.message);
+    return Promise.reject(error);
+  }
+);
 
 // Auth API
 export const authAPI = {
