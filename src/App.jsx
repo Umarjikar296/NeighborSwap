@@ -7,6 +7,7 @@ import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import AddProductPage from './components/AddProductPage';
 import ProfilePage from './components/ProfilePage';
+import MyProductsPage from './components/MyProductsPage';
 import { authAPI, productAPI } from './services/api';
 
 function App() {
@@ -18,12 +19,16 @@ function App() {
   // Check for existing token on app load
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (token) {
-      authAPI.getMe().then(response => {
-        setUser(response.data);
-      }).catch(() => {
+    const savedUser = localStorage.getItem('user');
+    
+    if (token && savedUser) {
+      try {
+        setUser(JSON.parse(savedUser));
+      } catch (error) {
+        console.error('Error parsing saved user:', error);
         localStorage.removeItem('token');
-      });
+        localStorage.removeItem('user');
+      }
     }
   }, []);
 
@@ -33,33 +38,36 @@ function App() {
   }, []);
 
   const fetchProducts = async () => {
-  try {
-    setLoading(true);
-    const response = await productAPI.getAll();
-    // Extract the products array from the response
-    setProducts(response.data.products || []);
-  } catch (error) {
-    console.error('Error fetching products:', error);
-    setProducts([]); // Set empty array on error
-  } finally {
-    setLoading(false);
-  }
-};
+    try {
+      setLoading(true);
+      const response = await productAPI.getAll();
+      // Extract the products array from the response
+      setProducts(response.data.products || []);
+    } catch (error) {
+      console.error('Error fetching products:', error);
+      setProducts([]); // Set empty array on error
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleLogin = (userData, token) => {
     localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(userData));
     setUser(userData);
     setCurrentView('home');
   };
 
   const handleLogout = () => {
     localStorage.removeItem('token');
+    localStorage.removeItem('user');
     setUser(null);
     setCurrentView('home');
   };
 
-  const handleProductAdded = () => {
-    fetchProducts(); // Refresh products list
+  const handleProductAdded = (newProduct) => {
+    // Add the new product to the beginning of the products array
+    setProducts(prevProducts => [newProduct, ...prevProducts]);
     setCurrentView('home');
   };
 
@@ -67,20 +75,31 @@ function App() {
     switch (currentView) {
       case 'login':
         return <LoginPage onLogin={handleLogin} setCurrentView={setCurrentView} />;
+      
       case 'register':
         return <RegisterPage onRegister={handleLogin} setCurrentView={setCurrentView} />;
+      
       case 'add-product':
         return user ? (
-          <AddProductPage onProductAdded={handleProductAdded} setCurrentView={setCurrentView} />
+          <AddProductPage onProductAdded={handleProductAdded} setCurrentView={setCurrentView} user={user} />
         ) : (
           <LoginPage onLogin={handleLogin} setCurrentView={setCurrentView} />
         );
+      
+      case 'my-products':
+        return user ? (
+          <MyProductsPage user={user} setCurrentView={setCurrentView} />
+        ) : (
+          <LoginPage onLogin={handleLogin} setCurrentView={setCurrentView} />
+        );
+      
       case 'profile':
         return user ? (
           <ProfilePage user={user} setCurrentView={setCurrentView} />
         ) : (
           <LoginPage onLogin={handleLogin} setCurrentView={setCurrentView} />
         );
+      
       case 'home':
       default:
         return (
@@ -88,6 +107,7 @@ function App() {
             products={products}
             loading={loading}
             onRefresh={fetchProducts}
+            user={user}
           />
         );
     }
@@ -105,6 +125,16 @@ function App() {
       <main>
         {renderCurrentView()}
       </main>
+
+      {/* Welcome Message for Logged In Users */}
+      {user && currentView === 'home' && (
+        <div className="fixed top-20 right-4 bg-gradient-to-r from-purple-600 to-blue-600 text-white px-6 py-3 rounded-lg shadow-lg z-40">
+          <div className="flex items-center space-x-2">
+            <i className="fas fa-check-circle"></i>
+            <span>Welcome back, {user.name}!</span>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className="bg-gray-900 text-white py-12 mt-16">
@@ -124,8 +154,13 @@ function App() {
               <h4 className="font-semibold mb-4">Quick Links</h4>
               <ul className="space-y-2 text-gray-400">
                 <li><button onClick={() => setCurrentView('home')} className="hover:text-white transition-colors">Browse Items</button></li>
-                <li><button onClick={() => setCurrentView('add-product')} className="hover:text-white transition-colors">List Item</button></li>
-                <li><button onClick={() => setCurrentView('profile')} className="hover:text-white transition-colors">My Profile</button></li>
+                {user && (
+                  <>
+                    <li><button onClick={() => setCurrentView('add-product')} className="hover:text-white transition-colors">List Item</button></li>
+                    <li><button onClick={() => setCurrentView('my-products')} className="hover:text-white transition-colors">My Products</button></li>
+                    <li><button onClick={() => setCurrentView('profile')} className="hover:text-white transition-colors">My Profile</button></li>
+                  </>
+                )}
               </ul>
             </div>
 

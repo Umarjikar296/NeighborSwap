@@ -31,16 +31,22 @@ export const authAPI = {
   getMe: () => api.get('/auth/me'),
 };
 
-// Product API
 export const productAPI = {
   getAll: (params = {}) => api.get('/products', { params }),
-  create: (formData) => api.post('/products', formData, {
-    headers: {
-      'Content-Type': 'multipart/form-data',
-    },
-  }),
-  getUserProducts: (userId) => api.get(`/users/${userId}/products`),
+  create: (formData) => api.post('/products', formData),
+  getUserProducts: (userId) => api.get(`/products/user/${userId}`),
 };
+
+// Product API
+// export const productAPI = {
+//   getAll: (params = {}) => api.get('/products', { params }),
+//   create: (formData) => api.post('/products', formData, {
+//     headers: {
+//       'Content-Type': 'multipart/form-data',
+//     },
+//   }),
+//   getUserProducts: (userId) => api.get(`/users/${userId}/products`),
+// };
 
 // Utility API
 export const utilityAPI = {
